@@ -2,27 +2,33 @@ from tempfile import NamedTemporaryFile
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from google.cloud import speech, texttospeech
-
 import openai
 import os
 
 app = FastAPI()
 
+# Ensure the OpenAI API key is set from environment variables
+openai_api_key = os.getenv('OPENAI_API_KEY')
+if openai_api_key is not None:
+    openai.api_key = openai_api_key
+else:
+    raise ValueError("OpenAI API key not set!")
 
+
+# Function to save an uploaded file to a temporary file
 def save_upload_file_temp(upload_file: UploadFile) -> str:
     try:
-        temp_file = NamedTemporaryFile(delete=False)
-        content = upload_file.file.read()
-        temp_file.write(content)
-        temp_file.close()
-        return temp_file.name
+        with NamedTemporaryFile(delete=False) as temp_file:
+            content = upload_file.file.read()
+            temp_file.write(content)
+            return temp_file.name
     except Exception as e:
         print(f"Failed to save file: {e}")
         raise
 
 
-# Speech to text functionality
-def transcribe_audio(speech_file):
+# Function to transcribe audio to text
+def transcribe_audio(speech_file: str) -> str:
     client = speech.SpeechClient()
 
     with open(speech_file, 'rb') as audio_file:
@@ -36,13 +42,12 @@ def transcribe_audio(speech_file):
     )
 
     response = client.recognize(config=config, audio=audio)
+    transcripts = [result.alternatives[0].transcript for result in response.results]
+    return ' '.join(transcripts)
 
-    for result in response.results:
-        print("Transcript: {}".format(result.alternatives[0].transcript))
 
-
-# Text to speech functionality
-def text_to_speech(text, output_file="output.mp3"):
+# Function to convert text to speech and save as MP3
+def text_to_speech(text: str, output_file: str = "output.mp3"):
     client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
@@ -58,23 +63,20 @@ def text_to_speech(text, output_file="output.mp3"):
 
     with open(output_file, 'wb') as out:
         out.write(response.audio_content)
-        print(f'Audio content written to file "{output_file}"')
+        print(f'Audio content written to "{output_file}"')
 
 
+# Endpoint to process text commands via GPT
 @app.post("/command/")
 async def command(query: str):
-    # Process the command using GPT
     response = process_command(query)
     return {"response": response}
 
 
+# Function to process commands using OpenAI GPT
 def process_command(query: str) -> str:
-    # Make sure the OpenAI API key is correctly set
-    if not openai.api_key:
-        raise ValueError("OpenAI API key is not configured.")
-
     response = openai.Completion.create(
-        engine="text-davinci-oo3",  # Make sure to use the correct and latest engine
+        engine="text-davinci-003",  # Correct engine name
         prompt=query,
         max_tokens=50,
         n=1,
@@ -84,23 +86,16 @@ def process_command(query: str) -> str:
     return response.choices[0].text.strip()
 
 
-# Safely access api key from environment variables
-openai_api_key = os.getenv('OPENAI_API_KEY')
-if openai_api_key is not None:
-    openai.api_key = openai_api_key
-else:
-    raise ValueError("OpenAI API key not set!")
-
-
+# Endpoint to transcribe audio files uploaded by users
 @app.post("/transcribe/")
 async def transcribe_audio_file(file: UploadFile = File(...)):
-    # Assuming you've saved the file locally
     local_file_path = save_upload_file_temp(file)
     transcript = transcribe_audio(local_file_path)
-    os.unlink(local_file_path)  # Clean up temporary file
+    os.unlink(local_file_path)  # Clean up the temporary file
     return JSONResponse(content={"transcript": transcript})
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
